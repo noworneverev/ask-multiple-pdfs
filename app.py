@@ -1,45 +1,80 @@
 import streamlit as st
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
+# from langchain.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import CharacterTextSplitter
-from langchain.embeddings import OpenAIEmbeddings, HuggingFaceInstructEmbeddings
-from langchain.vectorstores import FAISS
-from langchain.chat_models import ChatOpenAI
+# from langchain.embeddings import OpenAIEmbeddings, HuggingFaceInstructEmbeddings, GPT4AllEmbeddings
+from langchain_community.embeddings import OpenAIEmbeddings, HuggingFaceInstructEmbeddings, GPT4AllEmbeddings
+# from langchain.vectorstores import FAISS
+from langchain_community.vectorstores import Chroma
+# from langchain.chat_models import ChatOpenAI
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 from htmlTemplates import css, bot_template, user_template
-from langchain.llms import HuggingFaceHub
+# from langchain.llms import HuggingFaceHub
+from langchain_community.llms import LlamaCpp
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+import tempfile
+import os
 
-def get_pdf_text(pdf_docs):
-    text = ""
+model_path ='C://Hiwi_Project//langchain-local-model//models//llama-2-7b-chat.Q4_K_M.gguf'
+
+# Create a temporary directory to store the uploaded file
+temp_dir = tempfile.TemporaryDirectory()
+
+# def get_pdf_text(pdf_docs):
+#     text = ""
+#     for pdf in pdf_docs:
+#         pdf_reader = PdfReader(pdf)
+#         for page in pdf_reader.pages:
+#             text += page.extract_text()
+#     return text
+
+
+# def get_text_chunks(text):
+#     text_splitter = CharacterTextSplitter(
+#         separator="\n",
+#         chunk_size=1000,
+#         chunk_overlap=200,
+#         length_function=len
+#     )
+#     chunks = text_splitter.split_text(text)
+#     return chunks
+
+def get_text_chunks(pdf_docs):
+    chunks = []
     for pdf in pdf_docs:
-        pdf_reader = PdfReader(pdf)
-        for page in pdf_reader.pages:
-            text += page.extract_text()
-    return text
+        loader = PyPDFLoader(pdf)
+        data = loader.load()
 
-
-def get_text_chunks(text):
-    text_splitter = CharacterTextSplitter(
-        separator="\n",
-        chunk_size=1000,
-        chunk_overlap=200,
-        length_function=len
-    )
-    chunks = text_splitter.split_text(text)
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=20)
+        splits = text_splitter.split_documents(data)
+        chunks.extend(splits)
     return chunks
 
-
 def get_vectorstore(text_chunks):
-    embeddings = OpenAIEmbeddings()
+    # embeddings = OpenAIEmbeddings()    
+    embeddings = GPT4AllEmbeddings()
     # embeddings = HuggingFaceInstructEmbeddings(model_name="hkunlp/instructor-xl")
-    vectorstore = FAISS.from_texts(texts=text_chunks, embedding=embeddings)
+    # vectorstore = FAISS.from_texts(texts=text_chunks, embedding=embeddings)
+    vectorstore = Chroma.from_documents(documents=text_chunks, embedding=GPT4AllEmbeddings())
     return vectorstore
 
 
 def get_conversation_chain(vectorstore):
-    llm = ChatOpenAI()
+    # llm = ChatOpenAI()
     # llm = HuggingFaceHub(repo_id="google/flan-t5-xxl", model_kwargs={"temperature":0.5, "max_length":512})
+    n_gpu_layers = 1  # Metal set to 1 is enough.
+    n_batch = 512  # Should be between 1 and n_ctx, consider the amount of RAM of your Apple Silicon Chip.
+    llm = LlamaCpp(        
+        model_path=model_path,
+        n_gpu_layers=n_gpu_layers,
+        n_batch=n_batch,
+        n_ctx=2048,
+        f16_kv=True,  # MUST set to True, otherwise you will run into problem after a couple of calls
+        verbose=True,
+    )
 
     memory = ConversationBufferMemory(
         memory_key='chat_history', return_messages=True)
@@ -83,14 +118,21 @@ def main():
     with st.sidebar:
         st.subheader("Your documents")
         pdf_docs = st.file_uploader(
-            "Upload your PDFs here and click on 'Process'", accept_multiple_files=True)
+            "Upload your PDFs here and click on 'Process'", accept_multiple_files=True, type="pdf")     
+        file_paths = []
+        if pdf_docs:
+            for pdf in pdf_docs:
+                file_path = os.path.join(temp_dir.name, pdf.name)
+                with open(file_path, "wb") as f:
+                    f.write(pdf.read())   
+                file_paths.append(file_path)
         if st.button("Process"):
             with st.spinner("Processing"):
-                # get pdf text
-                raw_text = get_pdf_text(pdf_docs)
+                # # get pdf text
+                # raw_text = get_pdf_text(pdf_docs)
 
                 # get the text chunks
-                text_chunks = get_text_chunks(raw_text)
+                text_chunks = get_text_chunks(file_paths)
 
                 # create vector store
                 vectorstore = get_vectorstore(text_chunks)
